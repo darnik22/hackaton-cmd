@@ -1,0 +1,119 @@
+# The ceph VM should have additional disk for data (/dev/vdb)
+# Disable firewalld or open ports for ceph (6789, 6800-6810), for op (80,443,6665,9443)
+firewall-cmd --add-port 6789/tcp
+# Disable selinux or 
+setenforce 0
+
+# Install docker:
+curl --tlsv1 -sSL https://get.docker.com/ | sh
+systemctl start docker
+
+# Deploy ceph using ceph/daemon docker image (https://hub.docker.com/r/ceph/daemon/)
+mkdir /etc/ceph /var/lib/ceph 
+docker run -d --name=mon --net=host -v /etc/ceph:/etc/ceph -v /var/lib/ceph/:/var/lib/ceph/ -e MON_IP=192.168.0.209 -e CEPH_PUBLIC_NETWORK=192.168.0.0/24 ceph/daemon mon
+
+# To ged rid of write permision denied for /var/log/ceph... and some other settings
+echo "mon_cluster_log_file = /dev/null" >> /etc/ceph/ceph.conf
+echo "osd_pool_default_size = 1" >> /etc/ceph/ceph.conf
+echo "mon_allow_pool_delete = true" >> /etc/ceph/ceph.conf
+
+# Restart mon docker
+docker stop mon
+docker rm mon
+docker run -d --name=mon --net=host -v /etc/ceph:/etc/ceph -v /var/lib/ceph/:/var/lib/ceph/ -e MON_IP=192.168.0.209 -e CEPH_PUBLIC_NETWORK=192.168.0.0/24 ceph/daemon mon
+
+# Deploy mgr
+docker run -d --privileged=true --name=mgr --net=host -v /etc/ceph:/etc/ceph -v /var/lib/ceph/:/var/lib/ceph/ -e MON_IP=192.168.0.209 -e CEPH_PUBLIC_NETWORK=192.168.0.0/24 ceph/daemon mgr
+
+# Deploy OSD
+docker run -d --privileged=true --name=osd.1 --net=host -v /etc/ceph:/etc/ceph -v /var/lib/ceph/:/var/lib/ceph/ -v /dev/:/dev/ -e MON_IP=192.168.0.209 -e CEPH_PUBLIC_NETWORK=192.168.0.0/24 -e OSD_DEVICE=/dev/vdb ceph/daemon osd
+
+# Check ceph and create new pool
+docker exec -it mon bash
+ceph -s
+ceph osd pool create onedata 128
+ceph -s
+
+# Do a basic rados benchmark
+rados bench -p onedata 10 write
+
+# Ceph creds
+cat /etc/ceph/ceph.c*
+
+# To clean start over ceph while keeping defaults and creds:
+#  - stop and rm docker ceph containers
+#  - rm -rf /var/lib/ceph/*
+#  - zap /dev/vdb (dd if=/dev/zero of=/dev/vdb bs=1M count=100)
+
+# On OP: run space support oneliner (onedatify)
+
+# Install ceph software on CentOS
+sudo yum install epel-release
+sudo rpm --import https://download.ceph.com/keys/release.asc
+# Create /etc/yum.repos.d/ceph.repo with content:
+#------------start-------------------------
+[Ceph]
+name=Ceph packages for $basearch
+baseurl=http://download.ceph.com/rpm-luminous/el7/$basearch/
+enabled=1
+gpgcheck=1
+type=rpm-md
+gpgkey=https://download.ceph.com/keys/release.asc
+priority=1
+
+[Ceph-noarch]
+name=Ceph noarch packages
+baseurl=http://download.ceph.com/rpm-luminous/el7/noarch/
+enabled=1
+gpgcheck=1
+type=rpm-md
+gpgkey=https://download.ceph.com/keys/release.asc
+priority=1
+
+[ceph-source]
+name=Ceph source packages
+baseurl=http://download.ceph.com/rpm-luminous/el7/SRPMS/
+enabled=1
+gpgcheck=1
+type=rpm-md
+gpgkey=https://download.ceph.com/keys/release.asc
+priority=1
+#------------------end--------------------------------------
+sudo yum install ceph
+
+# Install oneclient, latest
+curl -sS  http://get.onedata.org/oneclient.sh | bash
+# or a given version
+yum install http://packages.onedata.org/yum/centos/7x/x86_64/oneprovider-18.02.0.rc13-1.el7.x86_64.rpm
+
+# Mount oneclient
+sudo vi /etc/fuse.conf # uncoment allow_other
+oneclient -H hkt-op.onedata.plgrid.pl -t MDAxNWxvY2F00aW9uIG9uZXpvbmUKMDAzMGlkZW500aWZpZXIgNzM3MzZjZjBhYTg5ZmFiOTczM2ZhODRmYzJlOTcxMTYKMDAxYWNpZCB00aW1lIDwgMTU3MzA2NzcyMgowMDJmc2lnbmF00dXJlIHTSQQV2wzzupZQ8w800LjWZwJfPnLd402AoQ5avzoFGPNCg /tmp/mntoc -i -o allow_other --force-direct-io --force-fullblock-read -v 1 --rndrd-prefetch-cluster-window=12582912 --rndrd-prefetch-cluster-block-threshold=5  --cluster-prefetch-threshold-random --provider-timeout=30
+
+# oneclient with graphite monitoring
+oneclient -H hkt-op.onedata.plgrid.pl -t MDAxNWxvY2F00aW9uIG9uZXpvbmUKMDAzMGlkZW500aWZpZXIgNzM3MzZjZjBhYTg5ZmFiOTczM2ZhODRmYzJlOTcxMTYKMDAxYWNpZCB00aW1lIDwgMTU3MzA2NzcyMgowMDJmc2lnbmF00dXJlIHTSQQV2wzzupZQ8w800LjWZwJfPnLd402AoQ5avzoFGPNCg /tmp/mntoc -i -o allow_other --force-direct-io --force-fullblock-read -v 1 --rndrd-prefetch-cluster-window=12582912 --rndrd-prefetch-cluster-block-threshold=5  --cluster-prefetch-threshold-random --provider-timeout=30 --monitoring-type graphite --monitoring-level-full --monitoring-period 5 --graphite-url tcp://160.44.206.233:2003 --graphite-namespace-prefix oneclient-$(hostname|cut -f1 -d.) 
+
+# Do some write/read test with dd
+
+
+
+#### S3 server (minio https://docs.minio.io/)
+mkdir /mnt/config /mnt/data
+docker run -d -p 9000:9000 --name minio   -e "MINIO_ACCESS_KEY=AKIAIOSFODXN7EXAMPLE"   -e "MINIO_SECRET_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfifYEXAMPLEKEY"   -v /mnt/data:/data   -v /mnt/config:/root/.minio   minio/minio server /data
+firewall --add-port 9000/tcp
+wget https://dl.minio.io/client/mc/release/linux-amd64/mc
+./mc config host add minio http://192.168.0.209:9000 AKIAIOSFODXN7EXAMPLE wJalrXUtnFEMI/K7MDENG/bPxRfifYEXAMPLEKEY
+./mc mb minio/onedata
+./mc ls minio
+
+# Add storage to oneprovider via onepanel
+# Create and support space
+# Test with oneclient
+
+
+#### Grafana
+
+
+
+
+
