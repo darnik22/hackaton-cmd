@@ -112,7 +112,8 @@ wget https://dl.minio.io/client/mc/release/linux-amd64/mc
 
 
 #### Grafana
-
+docker run -d --name go-graphite --restart=always -p 80:80 -p 2003-2004:2003-2004 -p 3000:3000 gographite/go-graphite
+curl http://admin:admin@89.145.160.233:80/api/dashboards/db -X POST -d @/home/linux/oc-op-rt-v5.json -H 'Content-Type: application/json'
 
 
 
